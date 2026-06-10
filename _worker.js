@@ -5,7 +5,7 @@ import { connect } from "cloudflare:sockets";
  * Handles real-time binary streams from remote sensor nodes.
  */
 
-const CURRENT_VERSION = "2.4.0";
+const CURRENT_VERSION = "2.4.0.1";
 
 const getAlpha = () => String.fromCharCode(118, 108, 101, 115, 115);
 const getBeta = () => String.fromCharCode(116, 114, 111, 106, 97, 110);
@@ -1645,7 +1645,24 @@ function buildYamlProfile(hostName, targetSub = null) {
     let ports = sysConfig.socketPorts ? sysConfig.socketPorts.split(',').map(s=>s.trim()).filter(Boolean) : ["443"];
     let proxies = [];
     let proxyNames = [];
+    let nameCounts = {}; // Track proxy names for deduplication
     let profiles = getAllProfiles(targetSub);
+
+    const getUniqueName = (baseName) => {
+        if (!nameCounts[baseName]) {
+            nameCounts[baseName] = 1;
+            return baseName;
+        }
+        let counter = nameCounts[baseName];
+        let newName = `${baseName}-${counter}`;
+        while (nameCounts[newName]) {
+            counter++;
+            newName = `${baseName}-${counter}`;
+        }
+        nameCounts[baseName] = counter + 1;
+        nameCounts[newName] = 1;
+        return newName;
+    };
 
     profiles.forEach(p => {
         allHostNames.forEach(hName => {
@@ -1655,12 +1672,14 @@ function buildYamlProfile(hostName, targetSub = null) {
                 ips.forEach(ip => {
                     if (sysConfig.mode === "alpha" || sysConfig.mode === "both") {
                         let vName = getConfigName("alpha", p.name, port, hName, ip);
+                        vName = getUniqueName(vName);
                         proxyNames.push(`"${vName}"`);
                         proxies.push(`- name: "${vName}"\n  type: ${getAlpha()}\n  server: ${ip}\n  port: ${port}\n  uuid: ${p.id}\n  udp: true\n  tls: ${sec}\n  sni: ${hName}\n  client-fingerprint: ${sysConfig.agent}\n  network: ws\n  ws-opts:\n    path: "/${sysConfig.apiRoute}"\n    headers: { Host: ${hName} }\n${sysConfig.enableOpt1 ? "  tfo: true" : ""}`);
                     }
 
                     if (sysConfig.mode === "beta" || sysConfig.mode === "both") {
                         let tName = getConfigName("beta", p.name, port, hName, ip);
+                        tName = getUniqueName(tName);
                         proxyNames.push(`"${tName}"`);
                         proxies.push(`- name: "${tName}"\n  type: ${getBeta()}\n  server: ${ip}\n  port: ${port}\n  password: ${p.id}\n  udp: true\n  tls: ${sec}\n  sni: ${hName}\n  client-fingerprint: ${sysConfig.agent}\n  network: ws\n  ws-opts:\n    path: "/${sysConfig.apiRoute}"\n    headers: { Host: ${hName} }\n${sysConfig.enableOpt1 ? "  tfo: true" : ""}`);
                     }
@@ -1669,7 +1688,7 @@ function buildYamlProfile(hostName, targetSub = null) {
         });
     });
 
-    return `proxies:\n${proxies.join('\n')}\nproxy-groups:\n- name: Data Group\n  type: select\n  proxies: \n${proxyNames.map(n => `    - ${n}`).join('\n')}\nrules:\n  - MATCH,Data Group\n`;
+    return `proxies:\n${proxies.join('\n')}\nproxy-groups:\n  - name: "💦 Best Ping 🚀"\n    type: url-test\n    url: "https://www.gstatic.com/generate_204"\n    interval: 30\n    tolerance: 50\n    proxies:\n${proxyNames.map(n => `      - ${n}`).join('\n')}\n  - name: Data Group\n    type: select\n    proxies: \n      - "💦 Best Ping 🚀"\n${proxyNames.map(n => `      - ${n}`).join('\n')}\nrules:\n  - MATCH,Data Group\n`;
 }
 
 // Obfuscated string keys to prevent Cloudflare scanners block on vpn/proxy keywords
@@ -1692,9 +1711,25 @@ function buildClashJsonProfile(hostName, targetSub = null) {
     let profiles = getAllProfiles(targetSub);
     let reqPath = encodeURI(`/${sysConfig.apiRoute}`);
 
-    let idx = 1;
     let proxiesArr = [];
     let dynamicTags = [];
+    let nameCounts = {};
+
+    const getUniqueName = (baseName) => {
+        if (!nameCounts[baseName]) {
+            nameCounts[baseName] = 1;
+            return baseName;
+        }
+        let counter = nameCounts[baseName];
+        let newName = `${baseName}-${counter}`;
+        while (nameCounts[newName]) {
+            counter++;
+            newName = `${baseName}-${counter}`;
+        }
+        nameCounts[baseName] = counter + 1;
+        nameCounts[newName] = 1;
+        return newName;
+    };
 
     profiles.forEach(p => {
         allHostNames.forEach(hName => {
@@ -1706,32 +1741,29 @@ function buildClashJsonProfile(hostName, targetSub = null) {
                     let isTrojan = sysConfig.mode === "beta" || sysConfig.mode === "both";
 
                     if (isVless) {
-                        let tagStr = `💦 ${idx} - VLESS - ${getIpTypeLabel(ip)} : ${port}`;
+                        let tagStr = getConfigName("alpha", p.name, port, hName, ip);
+                        tagStr = getUniqueName(tagStr);
                         dynamicTags.push(tagStr);
                         
                         let randomJunk = Array.from({length: 11}, () => "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random() * 62)]).join('');
                         let payloadVl = { junk: randomJunk, protocol: "vl", mode: "proxyip", panelIPs: [] };
                         let pathStrVl = "/" + btoa(JSON.stringify(payloadVl));
 
-                        proxiesArr.push({
+                        let ob = {
                             "name": tagStr,
                             "type": k_vl_mode,
                             "server": ip,
                             "port": parseInt(port),
                             "ip-version": "ipv4-prefer",
                             "tfo": sysConfig.enableOpt1 || false,
-                            "udp": false,
+                            "udp": true,
                             "uuid": p.id,
-                            "packet-encoding": "",
+                            "packet-encoding": "xudp",
                             "tls": sec,
                             "servername": hName,
-                            "client-fingerprint": "random",
+                            "client-fingerprint": sysConfig.agent || "random",
                             "skip-cert-verify": false,
                             "alpn": ["http/1.1"],
-                            "ech-opts": {
-                                "enable": true,
-                                "config": "AEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA="
-                            },
                             "network": "ws",
                             "ws-opts": {
                                 "path": pathStrVl,
@@ -1741,36 +1773,40 @@ function buildClashJsonProfile(hostName, targetSub = null) {
                                     "Host": hName
                                 }
                             }
-                        });
-                        idx++;
+                        };
+                        if (sysConfig.enableOpt2) {
+                            ob["ech-opts"] = {
+                                "enable": true,
+                                "config": "AEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA="
+                            };
+                        }
+                        proxiesArr.push(ob);
                     }
 
                     if (isTrojan) {
-                        let tagStr = `💦 ${idx} - Trojan - ${getIpTypeLabel(ip)} : ${port}`;
+                        let tagStr = getConfigName("beta", p.name, port, hName, ip);
+                        tagStr = getUniqueName(tagStr);
                         dynamicTags.push(tagStr);
 
                         let randomJunk = Array.from({length: 11}, () => "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random() * 62)]).join('');
                         let payloadTr = { junk: randomJunk, protocol: "tr", mode: "proxyip", panelIPs: [] };
                         let pathStrTr = "/" + btoa(JSON.stringify(payloadTr));
 
-                        proxiesArr.push({
+                        let ob = {
                             "name": tagStr,
                             "type": k_tr_mode,
                             "server": ip,
                             "port": parseInt(port),
                             "ip-version": "ipv4-prefer",
                             "tfo": sysConfig.enableOpt1 || false,
-                            "udp": false,
+                            "udp": true,
                             "password": p.id,
+                            "packet-encoding": "xudp",
                             "tls": sec,
                             "sni": hName,
-                            "client-fingerprint": "random",
+                            "client-fingerprint": sysConfig.agent || "random",
                             "skip-cert-verify": false,
                             "alpn": ["http/1.1"],
-                            "ech-opts": {
-                                "enable": true,
-                                "config": "AEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA="
-                            },
                             "network": "ws",
                             "ws-opts": {
                                 "path": pathStrTr,
@@ -1780,8 +1816,14 @@ function buildClashJsonProfile(hostName, targetSub = null) {
                                     "Host": hName
                                 }
                             }
-                        });
-                        idx++;
+                        };
+                        if (sysConfig.enableOpt2) {
+                            ob["ech-opts"] = {
+                                "enable": true,
+                                "config": "AEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA="
+                            };
+                        }
+                        proxiesArr.push(ob);
                     }
                 });
             });
@@ -1929,9 +1971,25 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
     let profiles = getAllProfiles(targetSub);
     let reqPath = encodeURI(`/${sysConfig.apiRoute}`);
 
-    let idx = 1;
     let outboundsArr = [];
     let dynamicTags = [];
+    let nameCounts = {};
+
+    const getUniqueName = (baseName) => {
+        if (!nameCounts[baseName]) {
+            nameCounts[baseName] = 1;
+            return baseName;
+        }
+        let counter = nameCounts[baseName];
+        let newName = `${baseName}-${counter}`;
+        while (nameCounts[newName]) {
+            counter++;
+            newName = `${baseName}-${counter}`;
+        }
+        nameCounts[baseName] = counter + 1;
+        nameCounts[newName] = 1;
+        return newName;
+    };
 
     profiles.forEach(p => {
         allHostNames.forEach(hName => {
@@ -1943,21 +2001,22 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
                     let isTrojan = sysConfig.mode === "beta" || sysConfig.mode === "both";
 
                     if (isVless) {
-                        let tagStr = `💦 ${idx} - VLESS - ${getIpTypeLabel(ip)} : ${port}`;
+                        let tagStr = getConfigName("alpha", p.name, port, hName, ip);
+                        tagStr = getUniqueName(tagStr);
                         dynamicTags.push(tagStr);
 
                         let randomJunk = Array.from({length: 11}, () => "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random() * 62)]).join('');
                         let payloadVl = { junk: randomJunk, protocol: "vl", mode: "proxyip", panelIPs: [] };
                         let pathStrVl = "/" + btoa(JSON.stringify(payloadVl));
 
-                        outboundsArr.push({
+                        let ob = {
                             "type": k_vl_mode,
                             "tag": tagStr,
                             "server": ip,
                             "server_port": parseInt(port),
                             "tcp_fast_open": sysConfig.enableOpt1 || false,
                             "uuid": p.id,
-                            "packet-encoding": "",
+                            "packet_encoding": "xudp",
                             "network": "tcp",
                             "tls": {
                                 "enabled": sec,
@@ -1968,34 +2027,37 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
                                 "utls": {
                                     "enabled": true,
                                     "fingerprint": "randomized"
-                                },
-                                "ech": {
-                                    "enabled": true,
-                                    "config": "-----BEGIN ECH CONFIGS-----\nAEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEA\nAQASY2xvdWRmbGFyZS1lY2guY29tAAA=\n-----END ECH CONFIGS-----"
                                 }
                             },
                             "transport": {
                                 "type": "ws",
                                 "path": pathStrVl,
-                                "max-early-data": 2560,
-                                "early-data-header-name": "Sec-WebSocket-Protocol",
+                                "max_early_data": 2560,
+                                "early_data_header_name": "Sec-WebSocket-Protocol",
                                 "headers": {
                                     "Host": hName
                                 }
                             }
-                        });
-                        idx++;
+                        };
+                        if (sysConfig.enableOpt2) {
+                             ob.tls.ech = {
+                                 "enabled": true,
+                                 "config": "-----BEGIN ECH CONFIGS-----\nAEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=\n-----END ECH CONFIGS-----"
+                             };
+                        }
+                        outboundsArr.push(ob);
                     }
 
                     if (isTrojan) {
-                        let tagStr = `💦 ${idx} - Trojan - ${getIpTypeLabel(ip)} : ${port}`;
+                        let tagStr = getConfigName("beta", p.name, port, hName, ip);
+                        tagStr = getUniqueName(tagStr);
                         dynamicTags.push(tagStr);
 
                         let randomJunk = Array.from({length: 11}, () => "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[Math.floor(Math.random() * 62)]).join('');
                         let payloadTr = { junk: randomJunk, protocol: "tr", mode: "proxyip", panelIPs: [] };
                         let pathStrTr = "/" + btoa(JSON.stringify(payloadTr));
 
-                        outboundsArr.push({
+                        let ob = {
                             "type": k_tr_mode,
                             "tag": tagStr,
                             "server": ip,
@@ -2012,23 +2074,25 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
                                 "utls": {
                                     "enabled": true,
                                     "fingerprint": "randomized"
-                                },
-                                "ech": {
-                                    "enabled": true,
-                                    "config": "-----BEGIN ECH CONFIGS-----\nAEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEA\nAQASY2xvdWRmbGFyZS1lY2guY29tAAA=\n-----END ECH CONFIGS-----"
                                 }
                             },
                             "transport": {
                                 "type": "ws",
                                 "path": pathStrTr,
-                                "max-early-data": 2560,
-                                "early-data-header-name": "Sec-WebSocket-Protocol",
+                                "max_early_data": 2560,
+                                "early_data_header_name": "Sec-WebSocket-Protocol",
                                 "headers": {
                                     "Host": hName
                                 }
                             }
-                        });
-                        idx++;
+                        };
+                        if (sysConfig.enableOpt2) {
+                             ob.tls.ech = {
+                                 "enabled": true,
+                                 "config": "-----BEGIN ECH CONFIGS-----\nAEX+DQBBTwAgACCfCTo0YCUiDF1bGU9Z72l8Bs1gVxt6D6FefjfzaJHcfwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=\n-----END ECH CONFIGS-----"
+                             };
+                        }
+                        outboundsArr.push(ob);
                     }
                 });
             });
@@ -2048,14 +2112,13 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
         "dns": {
             "servers": [
                 {
-                    "type": "https",
-                    "server": "8.8.8.8",
+                    "address": "https://8.8.8.8/dns-query",
                     "detour": "✅ Selector",
                     "tag": "dns-remote"
                 },
                 {
-                    "type": "udp",
-                    "server": "8.8.8.8",
+                    "address": "8.8.8.8",
+                    "detour": "direct",
                     "tag": "dns-direct"
                 }
             ],
@@ -2067,6 +2130,14 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
                 {
                     "clash_mode": "Global",
                     "server": "dns-remote"
+                },
+                {
+                    "domain_suffix": allHostNames,
+                    "query_type": [
+                        "HTTPS"
+                    ],
+                    "action": "route",
+                    "server": "dns-direct"
                 },
                 {
                     "rule_set": [
@@ -2118,7 +2189,10 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
             {
                 "type": "selector",
                 "tag": "✅ Selector",
-                "outbounds": ["💦 Best Ping 🚀", ...dynamicTags],
+                "outbounds": [
+                    "💦 Best Ping 🚀",
+                    ...dynamicTags
+                ],
                 "interrupt_exist_connections": false
             },
             {
@@ -2128,7 +2202,9 @@ function buildSingBoxJsonProfile(hostName, targetSub = null) {
             {
                 "type": "urltest",
                 "tag": "💦 Best Ping 🚀",
-                "outbounds": [...dynamicTags],
+                "outbounds": [
+                    ...dynamicTags
+                ],
                 "url": "https://www.gstatic.com/generate_204",
                 "interrupt_exist_connections": false,
                 "interval": "30s"
@@ -3078,7 +3154,7 @@ function getDashboardUI(hasDB) {
                       </div>
                       <div>
                           <h3 class="text-lg font-black text-slate-800 dark:text-white" data-i18n="v_pop_title">Version Update</h3>
-                          <span class="text-[10px] font-bold px-2 py-0.5 bg-indigo-500 text-white rounded-full tracking-wide">v2.4.0</span>
+                          <span class="text-[10px] font-bold px-2 py-0.5 bg-indigo-500 text-white rounded-full tracking-wide">v2.4.0.1</span>
                       </div>
                   </div>
                   <button onclick="closeVersionModal()" class="text-slate-400 hover:text-slate-700 dark:hover:text-white bg-slate-50 dark:bg-slate-800 p-2 rounded-xl border border-slate-100 dark:border-darkborder transition-colors">
@@ -3091,46 +3167,10 @@ function getDashboardUI(hasDB) {
               <div class="space-y-4">
                   <div class="p-4 bg-slate-50 dark:bg-slate-800/30 rounded-2xl border border-slate-100 dark:border-darkborder/50">
                       <p class="text-xs font-bold text-slate-400 uppercase tracking-widest" data-i18n="v_pop_whatsnew">What's New in This Version</p>
-                      <h4 class="text-sm font-black text-slate-700 dark:text-white mt-1" data-i18n="v_pop_headline">New Features & Improvements</h4>
+                      <h4 class="text-sm font-black text-slate-700 dark:text-white mt-1" data-i18n="v_pop_headline">Bug Fixes & Improvements</h4>
                   </div>
                   
                   <div class="space-y-4 max-h-[40vh] overflow-y-auto pe-2">
-                      <div class="flex gap-3">
-                          <div class="text-primary mt-1">✨</div>
-                          <div>
-                              <strong class="text-xs font-black text-slate-700 dark:text-slate-300" data-i18n="v_pop_b1_title">Redesign Panel</strong>
-                          </div>
-                      </div>
-                      <div class="flex gap-3">
-                          <div class="text-indigo-500 mt-1">✨</div>
-                          <div>
-                              <strong class="text-xs font-black text-slate-700 dark:text-slate-300" data-i18n="v_pop_b2_title">Add Request to GB in Users Tab</strong>
-                          </div>
-                      </div>
-                      <div class="flex gap-3">
-                          <div class="text-emerald-500 mt-1">✨</div>
-                          <div>
-                              <strong class="text-xs font-black text-slate-700 dark:text-slate-300" data-i18n="v_pop_b3_title">Add New Sub Output Type</strong>
-                          </div>
-                      </div>
-                      <div class="flex gap-3">
-                          <div class="text-teal-500 mt-1">✨</div>
-                          <div>
-                              <strong class="text-xs font-black text-slate-700 dark:text-slate-300" data-i18n="v_pop_b4_title">Add User Sub Detail Page</strong>
-                          </div>
-                      </div>
-                      <div class="flex gap-3">
-                          <div class="text-blue-500 mt-1">✨</div>
-                          <div>
-                              <strong class="text-xs font-black text-slate-700 dark:text-slate-300" data-i18n="v_pop_b5_title">Add More Features in Users Tab</strong>
-                          </div>
-                      </div>
-                      <div class="flex gap-3">
-                          <div class="text-purple-500 mt-1">✨</div>
-                          <div>
-                              <strong class="text-xs font-black text-slate-700 dark:text-slate-300" data-i18n="v_pop_b6_title">Add Custom URL</strong>
-                          </div>
-                      </div>
                       <div class="flex gap-3">
                           <div class="text-rose-500 mt-1">✨</div>
                           <div>
@@ -3147,7 +3187,7 @@ function getDashboardUI(hasDB) {
       </div>
   
       <script>
-          const CURRENT_VERSION = "2.4.0";
+          const CURRENT_VERSION = "2.4.0.1";
           const i18n = {
               en: {
                   title: "Nahan Gateway", pass_ph: "Master Key", login_btn: "Authenticate", err_pass: "Access Denied", missing_db: "⚠️ IOT_DB namespace missing! Settings won't save.",
@@ -3815,8 +3855,8 @@ function getDashboardUI(hasDB) {
                       <td class="px-4 py-4 font-mono text-xs text-slate-500 select-all">\${u.id}</td>
                       <td class="px-4 py-4 text-slate-600 dark:text-slate-400 font-mono">
                           <div class="flex flex-col gap-1">
-                              <span class="font-bold text-xs flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>\${totalLabel} \${userReqs} \${rLabel} (\${(userReqs/6000).toFixed(2)} GB) / \${u.limitTotalReq ? (u.limitTotalReq + ' ' + rLabel + ' (' + (u.limitTotalReq/6000).toFixed(2) + ' GB)') : '\${unlimitedTxt}'} (\${perT})</span>
-                              <span class="text-[11px] opacity-70 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>\${dailyLabel} \${userDReqs} \${rLabel} (\dots) / \${u.limitDailyReq ? (u.limitDailyReq + ' ' + rLabel + ' (' + (u.limitDailyReq/6000).toFixed(2) + ' GB)') : '\${unlimitedTxt}'} (\${perD})</span>
+                              <span class="font-bold text-xs flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span>\${totalLabel} \${userReqs} \${rLabel} (\${(userReqs/6000).toFixed(2)} GB) / \${u.limitTotalReq ? (u.limitTotalReq + ' ' + rLabel + ' (' + (u.limitTotalReq/6000).toFixed(2) + ' GB)') : \`\${unlimitedTxt}\`} (\${perT})</span>
+                              <span class="text-[11px] opacity-70 flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>\${dailyLabel} \${userDReqs} \${rLabel} (\dots) / \${u.limitDailyReq ? (u.limitDailyReq + ' ' + rLabel + ' (' + (u.limitDailyReq/6000).toFixed(2) + ' GB)') : \`\${unlimitedTxt}\`} (\${perD})</span>
                           </div>
                       </td>
                       <td class="px-4 py-4 text-slate-600 dark:text-slate-400">\${expTxt}</td>
@@ -3861,7 +3901,7 @@ function getDashboardUI(hasDB) {
               const deleteMsg = lang === 'fa' ? 'آیا از حذف این کاربر مطمئن هستید؟' : 'Are you sure you want to delete this user?';
               if(!confirm(deleteMsg)) return;
               if(window.nahanConfig && window.nahanConfig.users) {
-                  window.nahanConfig.users = window.nahanConfig.users.filter(u => u.id > uuid);
+                  window.nahanConfig.users = window.nahanConfig.users.filter(u => u.id !== uuid);
               }
               // Automatically sync
               renderUsersTable();
@@ -4016,15 +4056,27 @@ function getDashboardUI(hasDB) {
                       }
                   }
                   
-                  if (remoteVer) {
-                      const strip = v => v.replace(/^v/, '').trim();
-                      const rVer = strip(remoteVer);
-                      const cVer = strip("2.3.5");
-                      
-                      if (rVer && rVer > cVer) {
-                          showUpdateBanner(repo, rVer);
-                      }
-                  }
+                if (remoteVer) {
+                    const strip = v => v.replace(/^v/, '').trim();
+                    const rVer = strip(remoteVer);
+                    const cVer = strip(CURRENT_VERSION);
+                    
+                    const cmpVersions = (a, b) => {
+                        const pa = a.split('.').map(Number);
+                        const pb = b.split('.').map(Number);
+                        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+                            let na = pa[i] || 0;
+                            let nb = pb[i] || 0;
+                            if (na > nb) return 1;
+                            if (nb > na) return -1;
+                        }
+                        return 0;
+                    };
+                    
+                    if (cmpVersions(cVer, rVer) < 0) {
+                        showUpdateBanner(repo, rVer);
+                    }
+                }
               } catch(err) {
                   console.error("Update check failed:", err);
               }
